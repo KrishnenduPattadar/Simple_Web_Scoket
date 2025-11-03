@@ -7,37 +7,47 @@ async def start_market_feed():
 
     while True:
         try:
-            data = nsefetch("https://www.nseindia.com/api/allIndices")
+            # --- 1️⃣ Fetch main NIFTY 50 index data ---
+            all_indices = nsefetch("https://www.nseindia.com/api/allIndices")
 
-            price = None
-            change = None
-            change_percent = None
-
-            for index in data["data"]:
+            nifty_50 = None
+            for index in all_indices["data"]:
                 if index["index"] == "NIFTY 50":
-                    price = index["last"]
-                    change = index["variation"]
-                    change_percent = index["percentChange"]
+                    nifty_50 = {
+                        "price": index["last"],
+                        "change": index["variation"],
+                        "change_percent": index["percentChange"],
+                    }
                     break
 
-            if price:
-                await layer.group_send(
-                    "market_updates",
-                    {
-                        "type": "market_update",
-                        "data": {
-                            "nifty_50": price,
-                            "change": change,
-                            "change_percent": change_percent,
-                        },
-                    }
-                )
-                print(f"Sent live NIFTY 50: {price} ({change:+.2f}, {change_percent:+.2f}%)")
+            # --- 2️⃣ Fetch all 50 stocks under NIFTY 50 ---
+            stock_data = nsefetch("https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050")
 
-            else:
-                print("Nifty 50 not found in response")
+            stocks = []
+            for stock in stock_data["data"]:
+                stocks.append({
+                    "symbol": stock["symbol"],
+                    "price": stock["lastPrice"],
+                    "change": stock["change"],
+                    "change_percent": stock["pChange"],
+                })
+
+            # --- 3️⃣ Send both to WebSocket group ---
+            await layer.group_send(
+                "market_updates",
+                {
+                    "type": "market_update",
+                    "data": {
+                        "nifty_50": nifty_50,
+                        "stocks": stocks,
+                    },
+                },
+            )
+
+            print(f"📡 Sent NIFTY 50: {nifty_50['price']} ({nifty_50['change']:+.2f}, {nifty_50['change_percent']:+.2f}%)")
+            print(f"📊 Sent {len(stocks)} stock updates")
 
         except Exception as e:
-            print("Error fetching Nifty data:", e)
+            print("⚠️ Error fetching NIFTY data:", e)
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(5)  # refresh every 5 seconds

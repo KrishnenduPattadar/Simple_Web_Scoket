@@ -3,164 +3,221 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Nifty 50 Chart</title>
-    <!-- 1. Import Tailwind CSS for styling -->
+    <title>Live Nifty 50 Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 2. Import Chart.js for the graph -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <style>
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
+        #stocks-table-container::-webkit-scrollbar { width: 8px; }
+        #stocks-table-container::-webkit-scrollbar-track { background: #1F2937; }
+        #stocks-table-container::-webkit-scrollbar-thumb { background: #4B5563; border-radius: 4px; }
+        .apexcharts-tooltip-title, .apexcharts-tooltip-text {
+            color: #1F2937;
+        }
     </style>
 </head>
-<body class="bg-gray-900 text-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+<body class="bg-gray-900 text-gray-100 flex flex-col items-center min-h-screen p-4 space-y-6">
 
     <!-- Main Ticker Card -->
-    <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl w-full max-w-4xl mb-6">
+    <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl w-full max-w-4xl">
         <div class="flex justify-between items-center mb-4">
             <h1 id="symbol" class="text-3xl font-bold text-blue-400">NIFTY 50</h1>
             <div id="status" class="text-sm font-medium text-gray-500 px-3 py-1 bg-gray-700 rounded-full">
                 Connecting...
             </div>
         </div>
-        
         <div class="flex items-end space-x-4">
-            <!-- Current Price -->
             <div id="price" class="text-6xl font-bold text-white">--.--</div>
-            <!-- Price Change -->
             <div id="change" class="text-3xl font-semibold text-gray-500">
-                +--.-- (--%)
+                +--.-- (+--.--)
             </div>
         </div>
     </div>
 
     <!-- Live Graph Card -->
     <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl w-full max-w-4xl">
-        <h2 class="text-xl font-semibold mb-4 text-gray-300">Live Price Chart</h2>
-        <div class="h-64 md:h-80">
-            <canvas id="priceChart"></canvas>
+        <h2 class="text-xl font-semibold mb-4 text-gray-300">Live 1-Minute Candlestick Chart</h2>
+        <div id="candlestick-chart" class="h-96"></div>
+        <div id="chart-error" class="hidden text-red-400">Chart failed to load. Data is still live.</div>
+    </div>
+
+    <!-- NIFTY 50 Stocks Table Card -->
+    <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl w-full max-w-4xl">
+        <h2 class="text-xl font-semibold mb-4 text-gray-300">NIFTY 50 Stocks</h2>
+        <div id="stocks-table-container" class="max-h-96 overflow-y-auto">
+            <table class="w-full text-left">
+                <thead class="bg-gray-700 sticky top-0">
+                    <tr>
+                        <th class="p-3 text-sm font-semibold">Symbol</th>
+                        <th class="p-3 text-sm font-semibold text-right">Price</th>
+                        <th class="p-3 text-sm font-semibold text-right">Change</th>
+                        <th class="p-3 text-sm font-semibold text-right">% Change</th>
+                    </tr>
+                </thead>
+                <tbody id="stocks-table-body" class="divide-y divide-gray-700">
+                    <tr><td colspan="4" class="p-4 text-center text-gray-500">Waiting for data...</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
     <script>
-        const symbolEl = document.getElementById('symbol');
+        // --- 1. Get references to our HTML elements ---
         const priceEl = document.getElementById('price');
         const changeEl = document.getElementById('change');
         const statusEl = document.getElementById('status');
-        const ctx = document.getElementById('priceChart').getContext('2d');
+        const stocksTableBody = document.getElementById('stocks-table-body');
+        const chartEl = document.getElementById('candlestick-chart');
+        const chartErrorEl = document.getElementById('chart-error');
 
-        const MAX_DATA_POINTS = 20;
+        // --- 2. Initialize Chart variables ---
+        let chart = null;
+        let currentCandle = null;
+        const candleTime = 60000; // 60,000 ms = 1 minute
+        let candleHistory = []; // <-- NEW: Store completed candles here
 
-        const priceChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Price',
-                    data: [],
-                    borderColor: 'rgb(59, 130, 246)',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    borderWidth: 2,
-                    tension: 0.1,
-                    fill: true,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: {
-                        ticks: { color: '#9CA3AF' },
-                        grid: { color: '#374151' }
-                    },
-                    y: {
-                        ticks: { color: '#9CA3AF' },
-                        grid: { color: '#374151' }
-                    }
-                },
-                plugins: { legend: { display: false } },
-                animation: { duration: 200 }
-            }
-        });
-
+        // --- 3. Connect to the WebSocket ---
+        console.log("Connecting to WebSocket...");
         const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        const marketSocket = new WebSocket(protocol + window.location.host + '/ws/market/');
+        const marketSocket = new WebSocket(
+            protocol + window.location.host + '/ws/market/'
+        );
 
         marketSocket.onopen = function(e) {
-            console.log('✅ Market socket connected.');
+            console.log('Market socket connected.');
             statusEl.textContent = 'Connected';
             statusEl.classList.remove('text-gray-500', 'bg-gray-700');
             statusEl.classList.add('text-green-400', 'bg-green-900');
         };
 
         marketSocket.onclose = function(e) {
-            console.error('❌ Market socket closed unexpectedly.');
+            console.error('Market socket closed unexpectedly.');
             statusEl.textContent = 'Disconnected';
             statusEl.classList.remove('text-green-400', 'bg-green-900');
             statusEl.classList.add('text-red-400', 'bg-red-900');
         };
 
-        // --- 4️⃣ Handle Messages from the Server ---
-        marketSocket.onmessage = function(e) {
-            const result = JSON.parse(e.data);
-
-            // If backend sends raw fields directly
-            if (result.nifty_50) {
-                const price = result.nifty_50;
-                const change = result.change ?? 0;
-                const changePercent = result.change_percent ?? 0;
-
-                // Update text values
-                priceEl.textContent = price.toFixed(2);
-                const sign = change >= 0 ? '+' : '';
-                changeEl.textContent = `${sign}${change.toFixed(2)} (${sign}${changePercent.toFixed(2)}%)`;
-
-                // Update color based on movement
-                if (change >= 0) {
-                    changeEl.classList.remove('text-red-500');
-                    changeEl.classList.add('text-green-500');
-                } else {
-                    changeEl.classList.remove('text-green-500');
-                    changeEl.classList.add('text-red-500');
-                }
-
-                // Update chart
-                priceChart.data.labels.push(new Date().toLocaleTimeString());
-                priceChart.data.datasets[0].data.push(price);
-                if (priceChart.data.labels.length > MAX_DATA_POINTS) {
-                    priceChart.data.labels.shift();
-                    priceChart.data.datasets[0].data.shift();
-                }
-                priceChart.update();
+        // --- 4. Initialize the Chart (in a safe block) ---
+        function initializeChart() {
+            try {
+                const options = {
+                    chart: { type: 'candlestick', height: 350, foreColor: '#9CA3AF' },
+                    series: [{ name: 'NIFTY 50', data: [] }],
+                    title: { text: 'NIFTY 50 (1-Minute Intervals)', align: 'left', style: { color: '#E5E7EB' } },
+                    xaxis: { type: 'datetime', labels: { style: { colors: '#9CA3AF' } } },
+                    // --- FIX: Corrected color typo ---
+                    yaxis: { tooltip: { enabled: true }, labels: { style: { colors: '#9CA3AF' }, formatter: (val) => val.toFixed(2) } },
+                    grid: { borderColor: '#374151' },
+                    plotOptions: { candlestick: { colors: { upward: '#10B981', downward: '#EF4444' } } },
+                    tooltip: { theme: 'dark' }
+                };
+                chart = new ApexCharts(chartEl, options);
+                chart.render();
+            } catch (err) {
+                console.error("ApexCharts failed to initialize:", err);
+                chartErrorEl.classList.remove('hidden');
+                chart = null; // Ensure chart is null if it failed
             }
+        }
+        
+        initializeChart();
 
-            // Handle alternate structured format
-            else if (result.type === 'market_update') {
-                const data = result.data;
-                symbolEl.textContent = data.symbol;
-                priceEl.textContent = data.price.toFixed(2);
+        // --- 5. Chart Data Aggregation Logic ---
+        function createNewCandle(price, timestamp) {
+            const roundedTime = Math.floor(timestamp / candleTime) * candleTime;
+            return { time: roundedTime, open: price, high: price, low: price, close: price };
+        }
 
-                const sign = data.change >= 0 ? '+' : '';
-                changeEl.textContent = `${sign}${data.change.toFixed(2)} (${sign}${data.change_percent.toFixed(2)}%)`;
+        function updateCandle(candle, price) {
+            candle.high = Math.max(candle.high, price);
+            candle.low = Math.min(candle.low, price);
+            candle.close = price;
+        }
 
-                if (data.change >= 0) {
-                    changeEl.classList.remove('text-red-500');
-                    changeEl.classList.add('text-green-500');
-                } else {
-                    changeEl.classList.remove('text-green-500');
-                    changeEl.classList.add('text-red-500');
+        function formatCandleData(candle) {
+            return { x: new Date(candle.time), y: [candle.open, candle.high, candle.low, candle.close] };
+        }
+        
+        // --- 6. Handle Messages from the Server (FIXED LOGIC) ---
+        marketSocket.onmessage = function(e) {
+            const data = JSON.parse(e.data);
+            
+            if (data.nifty_50 && data.stocks) {
+                
+                // --- A. Update the NIFTY 50 Ticker ---
+                const nifty = data.nifty_50;
+                const changeColor = nifty.change >= 0 ? 'text-green-500' : 'text-red-500';
+                const sign = nifty.change >= 0 ? '+' : '';
+
+                priceEl.textContent = nifty.price.toFixed(2);
+                changeEl.textContent = `${sign}${nifty.change.toFixed(2)} (${sign}${nifty.change_percent.toFixed(2)}%)`;
+                changeEl.className = `text-3xl font-semibold ${changeColor}`;
+
+                // --- B. Update the Candlestick Chart (safely) ---
+                if (chart) { // Only run if chart initialized successfully
+                    try {
+                        const price = nifty.price;
+                        const timestamp = new Date().getTime();
+
+                        if (currentCandle === null) {
+                            // This is the very first tick
+                            currentCandle = createNewCandle(price, timestamp);
+                        } else if (timestamp >= currentCandle.time + candleTime) {
+                            // This is a new minute. Finalize the old candle.
+                            candleHistory.push(formatCandleData(currentCandle));
+                            // Start a new candle
+                            currentCandle = createNewCandle(price, timestamp);
+                        } else {
+                            // This is an update for the current minute
+                            updateCandle(currentCandle, price);
+                        }
+                        
+                        // --- FIX: This is the new, robust update logic ---
+                        // It sends all completed candles + the current, in-progress candle
+                        chart.updateSeries([{
+                            data: [
+                                ...candleHistory, 
+                                formatCandleData(currentCandle)
+                            ]
+                        }]);
+                        // --- End of Fix ---
+
+                    } catch (err) {
+                        console.error("Error updating chart:", err);
+                        chartErrorEl.textContent = "Error updating chart. See console.";
+                        chartErrorEl.classList.remove('hidden');
+                        chart = null; // Stop trying to update a broken chart
+                    }
                 }
-
-                priceChart.data.labels.push(new Date().toLocaleTimeString());
-                priceChart.data.datasets[0].data.push(data.price);
-                if (priceChart.data.labels.length > MAX_DATA_POINTS) {
-                    priceChart.data.labels.shift();
-                    priceChart.data.datasets[0].data.shift();
+                
+                // --- C. Update the Stocks Table ---
+                let tableHTML = '';
+                for (const stock of data.stocks) {
+                    const stockChangeColor = stock.change >= 0 ? 'text-green-500' : 'text-red-500';
+                    const stockSign = stock.change >= 0 ? '+' : '';
+                    
+                    tableHTML += `
+                        <tr class="hover:bg-gray-700">
+                            <td class="p-3 font-medium">${stock.symbol}</td>
+                            <td class="p-3 text-right">${stock.price.toFixed(2)}</td>
+                            <td class="p-3 text-right ${stockChangeColor}">${stockSign}${stock.change.toFixed(2)}</td>
+                            <td class="p-3 text-right ${stockChangeColor}">${stockSign}${stock.change_percent.toFixed(2)}%</td>
+                        </tr>
+                    `;
                 }
-                priceChart.update();
+                stocksTableBody.innerHTML = tableHTML;
+
+            } 
+            else if (data.message) {
+                console.log("Server message:", data.message);
+            } 
+            else {
+                console.warn("Received unknown data format:", data);
             }
         };
     </script>
 </body>
 </html>
+
