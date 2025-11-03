@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'chatapp',
     # 'daphne',
     'channels',
+    'market'
 ]
 
 ASGI_APPLICATION = 'chat_socketchat.asgi.application'

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Nifty 50 Chart</title>
+    <!-- 1. Import Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Import Chart.js for the graph -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <!-- Main Ticker Card -->
+    <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl w-full max-w-4xl mb-6">
+        <div class="flex justify-between items-center mb-4">
+            <h1 id="symbol" class="text-3xl font-bold text-blue-400">NIFTY 50</h1>
+            <div id="status" class="text-sm font-medium text-gray-500 px-3 py-1 bg-gray-700 rounded-full">
+                Connecting...
+            </div>
+        </div>
+        
+        <div class="flex items-end space-x-4">
+            <!-- Current Price -->
+            <div id="price" class="text-6xl font-bold text-white">--.--</div>
+            <!-- Price Change -->
+            <div id="change" class="text-3xl font-semibold text-gray-500">
+                +--.-- (--%)
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Graph Card -->
+    <div class="bg-gray-800 p-6 rounded-2xl shadow-2xl w-full max-w-4xl">
+        <h2 class="text-xl font-semibold mb-4 text-gray-300">Live Price Chart</h2>
+        <div class="h-64 md:h-80">
+            <canvas id="priceChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const symbolEl = document.getElementById('symbol');
+        const priceEl = document.getElementById('price');
+        const changeEl = document.getElementById('change');
+        const statusEl = document.getElementById('status');
+        const ctx = document.getElementById('priceChart').getContext('2d');
+
+        const MAX_DATA_POINTS = 20;
+
+        const priceChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Price',
+                    data: [],
+                    borderColor: 'rgb(59, 130, 246)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    borderWidth: 2,
+                    tension: 0.1,
+                    fill: true,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        ticks: { color: '#9CA3AF' },
+                        grid: { color: '#374151' }
+                    },
+                    y: {
+                        ticks: { color: '#9CA3AF' },
+                        grid: { color: '#374151' }
+                    }
+                },
+                plugins: { legend: { display: false } },
+                animation: { duration: 200 }
+            }
+        });
+
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const marketSocket = new WebSocket(protocol + window.location.host + '/ws/market/');
+
+        marketSocket.onopen = function(e) {
+            console.log('✅ Market socket connected.');
+            statusEl.textContent = 'Connected';
+            statusEl.classList.remove('text-gray-500', 'bg-gray-700');
+            statusEl.classList.add('text-green-400', 'bg-green-900');
+        };
+
+        marketSocket.onclose = function(e) {
+            console.error('❌ Market socket closed unexpectedly.');
+            statusEl.textContent = 'Disconnected';
+            statusEl.classList.remove('text-green-400', 'bg-green-900');
+            statusEl.classList.add('text-red-400', 'bg-red-900');
+        };
+
+        // --- 4️⃣ Handle Messages from the Server ---
+        marketSocket.onmessage = function(e) {
+            const result = JSON.parse(e.data);
+
+            // If backend sends raw fields directly
+            if (result.nifty_50) {
+                const price = result.nifty_50;
+                const change = result.change ?? 0;
+                const changePercent = result.change_percent ?? 0;
+
+                // Update text values
+                priceEl.textContent = price.toFixed(2);
+                const sign = change >= 0 ? '+' : '';
+                changeEl.textContent = `${sign}${change.toFixed(2)} (${sign}${changePercent.toFixed(2)}%)`;
+
+                // Update color based on movement
+                if (change >= 0) {
+                    changeEl.classList.remove('text-red-500');
+                    changeEl.classList.add('text-green-500');
+                } else {
+                    changeEl.classList.remove('text-green-500');
+                    changeEl.classList.add('text-red-500');
+                }
+
+                // Update chart
+                priceChart.data.labels.push(new Date().toLocaleTimeString());
+                priceChart.data.datasets[0].data.push(price);
+                if (priceChart.data.labels.length > MAX_DATA_POINTS) {
+                    priceChart.data.labels.shift();
+                    priceChart.data.datasets[0].data.shift();
+                }
+                priceChart.update();
+            }
+
+            // Handle alternate structured format
+            else if (result.type === 'market_update') {
+                const data = result.data;
+                symbolEl.textContent = data.symbol;
+                priceEl.textContent = data.price.toFixed(2);
+
+                const sign = data.change >= 0 ? '+' : '';
+                changeEl.textContent = `${sign}${data.change.toFixed(2)} (${sign}${data.change_percent.toFixed(2)}%)`;
+
+                if (data.change >= 0) {
+                    changeEl.classList.remove('text-red-500');
+                    changeEl.classList.add('text-green-500');
+                } else {
+                    changeEl.classList.remove('text-green-500');
+                    changeEl.classList.add('text-red-500');
+                }
+
+                priceChart.data.labels.push(new Date().toLocaleTimeString());
+                priceChart.data.datasets[0].data.push(data.price);
+                if (priceChart.data.labels.length > MAX_DATA_POINTS) {
+                    priceChart.data.labels.shift();
+                    priceChart.data.datasets[0].data.shift();
+                }
+                priceChart.update();
+            }
+        };
+    </script>
+</body>
+</html>
